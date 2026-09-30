@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 // PreToolUse hook on Bash: blocks a recursive grep / rg / git grep whose pattern is only code symbols and points Claude to the LSP tool.
-// "# text-search" at the end of the command lets a text search through.
+// A denied command rerun with "# text-search" appended goes through; the marker on a command never denied is ignored.
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, statSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve, sep } from "node:path";
 
@@ -17,7 +18,11 @@ const reason = (names) =>
   `ToolSearch select:LSP if it is deferred, then LSP workspaceSymbol (query: the name) and, at the returned position, ` +
   `findReferences / goToDefinition / incomingCalls / outgoingCalls. Several symbols: issue the LSP calls in parallel in one turn. ` +
   `If workspaceSymbol returns nothing, the server is still indexing: retry once. ` +
-  `Need text matches (comments, strings, docs, non-code files)? Rerun the same command with "${ESCAPE}" appended.`;
+  `Need text matches (comments, strings, docs, non-code files)? Rerun the same command with "${ESCAPE}" appended; ` +
+  `the marker only lets through a command that was denied first.`;
+
+const commandKey = (command) =>
+  createHash("sha1").update(command.replaceAll(ESCAPE, "").trim()).digest("hex");
 
 function tokenize(command) {
   const tokens = [];
@@ -133,8 +138,8 @@ function symbols(tokens, cwd) {
   return names.length && names.every((symbol) => SYMBOL.test(symbol)) ? names : [];
 }
 
-function decide(command, cwd) {
-  if (command.includes(ESCAPE)) return [];
+function decide(command, cwd, denied = new Set()) {
+  if (command.includes(ESCAPE) && denied.has(commandKey(command))) return [];
   let parsed;
   try {
     parsed = commands(tokenize(command));
@@ -153,8 +158,12 @@ async function main() {
   let text = "";
   for await (const chunk of process.stdin) text += chunk;
   const input = JSON.parse(text || "{}");
-  const names = decide(input.tool_input?.command ?? "", input.cwd ?? process.cwd());
+  const command = input.tool_input?.command ?? "";
+  const ledger = join(input.scratchpad_dir ?? tmpdir(), `lsp-first-${input.session_id}`);
+  const denied = new Set(existsSync(ledger) ? readFileSync(ledger, "utf8").split("\n") : []);
+  const names = decide(command, input.cwd ?? process.cwd(), denied);
   if (!names.length) return;
+  appendFileSync(ledger, `${commandKey(command)}\n`);
   console.log(
     JSON.stringify({
       hookSpecificOutput: {
@@ -181,7 +190,7 @@ if (process.argv[2] === "--test") {
     [`x=$(grep -rn "cartTotal" src)`, ["cartTotal"]],
     [`grep -rn "cartTotal" src;`, ["cartTotal"]],
     [`git grep -n 'API_BASE_URL' -- src '*.tsx'`, ["API_BASE_URL"]],
-    [`rg 'buildQueryKey' ${ESCAPE}`, []],
+    [`rg 'buildQueryKey' ${ESCAPE}`, ["buildQueryKey"]],
     [`grep -n "cartTotal" src/components/cart.tsx`, []],
     [`grep -rn "loading" src`, []],
     [String.raw`grep -rn "useStore(\$cartItems)" src`, []],
@@ -198,6 +207,10 @@ if (process.argv[2] === "--test") {
     [`grep -rn $name src`, []],
   ];
   for (const [command, expected] of cases) assert.deepEqual(decide(command, cwd), expected, command);
+  const denied = new Set([commandKey("rg 'buildQueryKey'")]);
+  assert.deepEqual(decide(`rg 'buildQueryKey'  ${ESCAPE}`, cwd, denied), []);
+  assert.deepEqual(decide(`rg 'buildQueryKey'`, cwd, denied), ["buildQueryKey"]);
+  assert.deepEqual(decide(`rg 'cartTotal' ${ESCAPE}`, cwd, denied), ["cartTotal"]);
   console.log("ok");
 } else {
   // fail open: a broken hook must not get in the way

@@ -52,13 +52,18 @@ the call hierarchy at the returned position, several symbols in parallel.
 - `git grep` over a revision (`HEAD~3`, a commit)
 - a grep after a pipe — that filters output, it does not search code
 - patterns built from shell variables (`"$name"`) and heredoc bodies
-- any command ending in `# text-search` — the way out the deny message offers for text matches
+- a denied command rerun with `# text-search` appended — the way out the deny message offers for
+  text matches. The marker on a command that was never denied is ignored, so it cannot become a
+  habit Claude puts on every grep. Denied commands are kept per session, as hashes, in a file in
+  the session's scratchpad (or the system temp dir).
 
 ## Caveats
 
 - The shell parsing is a small tokenizer, not bash. A command it cannot parse goes through.
-- Claude can learn to append `# text-search` to everything. Count how often it does before trusting
-  the hook.
+- The LSP only knows files in a tsconfig. A folder outside every tsconfig (e2e tests are the usual
+  one) gets no references, and nothing says they are missing.
+- `workspaceSymbol` does not find object keys such as `IDS.members.guest`: find the definition
+  line with a text search, then `findReferences` there.
 - The first `workspaceSymbol` after the language server starts can come back empty while it
   indexes. The deny message tells Claude to retry once.
 
