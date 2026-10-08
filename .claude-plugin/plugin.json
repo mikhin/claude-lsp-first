@@ -1,0 +1,12 @@
+{
+  "name": "lsp-first",
+  "version": "0.1.0",
+  "description": "Sends grep for code symbols to the LSP tool",
+  "author": {
+    "name": "Yuri Mikhin",
+    "url": "https://github.com/mikhin"
+  },
+  "homepage": "https://github.com/mikhin/claude-lsp-first",
+  "repository": "https://github.com/mikhin/claude-lsp-first",
+  "license": "MIT"
+}

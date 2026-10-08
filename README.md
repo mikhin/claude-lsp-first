@@ -17,22 +17,12 @@ grep for code symbols (isLoggedIn). Use the LSP tool instead: it returns only re
 Needs Node 18+ and a [code intelligence plugin](https://code.claude.com/docs/en/plugins/code-intelligence)
 for your language, so the LSP tool exists.
 
-```sh
-curl -o ~/.claude/hooks/lsp-first.mjs \
-  https://raw.githubusercontent.com/mikhin/claude-lsp-first/main/lsp-first.mjs
+```
+/plugin marketplace add mikhin/claude-plugins
+/plugin install lsp-first@mikhin
 ```
 
-Then in `~/.claude/settings.json`, or a project's `.claude/settings.local.json`:
-
-```json
-{
-  "hooks": {
-    "PreToolUse": [
-      { "matcher": "Bash", "hooks": [{ "type": "command", "command": "node ~/.claude/hooks/lsp-first.mjs" }] }
-    ]
-  }
-}
-```
+Installed it with `curl` before? Remove its entry from `settings.json`, or it runs twice.
 
 ## What it blocks
 
