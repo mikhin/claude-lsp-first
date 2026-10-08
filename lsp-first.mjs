@@ -1,8 +1,7 @@
 #!/usr/bin/env node
-// PreToolUse hook on Bash: blocks a recursive grep / rg / git grep whose pattern is only code symbols and points Claude to the LSP tool.
-// A denied command rerun with "# text-search" appended goes through; the marker on a command never denied is ignored.
+// PreToolUse hook on Bash and LSP: blocks a recursive grep / rg / git grep whose pattern is only code symbols and points Claude to the LSP tool.
+// A grep with "# text-search" appended goes through once the LSP tool was asked about every name in it in this session.
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve, sep } from "node:path";
@@ -18,11 +17,10 @@ const reason = (names) =>
   `ToolSearch select:LSP if it is deferred, then LSP workspaceSymbol (query: the name) and, at the returned position, ` +
   `findReferences / goToDefinition / incomingCalls / outgoingCalls. Several symbols: issue the LSP calls in parallel in one turn. ` +
   `If workspaceSymbol returns nothing, the server is still indexing: retry once. ` +
-  `Need text matches (comments, strings, docs, non-code files)? Rerun the same command with "${ESCAPE}" appended; ` +
-  `the marker only lets through a command that was denied first.`;
+  `Need text matches (comments, strings, docs, non-code files), or the LSP answer falls short? Ask the LSP about each of these names first, ` +
+  `then rerun the grep with "${ESCAPE}" appended; the marker does nothing for a name the LSP was not asked about in this session.`;
 
-const commandKey = (command) =>
-  createHash("sha1").update(command.replaceAll(ESCAPE, "").trim()).digest("hex");
+const bare = (name) => name.replace(/^\$/, "");
 
 function tokenize(command) {
   const tokens = [];
@@ -138,8 +136,7 @@ function symbols(tokens, cwd) {
   return names.length && names.every((symbol) => SYMBOL.test(symbol)) ? names : [];
 }
 
-function decide(command, cwd, denied = new Set()) {
-  if (command.includes(ESCAPE) && denied.has(commandKey(command))) return [];
+function decide(command, cwd, asked = new Set()) {
   let parsed;
   try {
     parsed = commands(tokenize(command));
@@ -151,19 +148,34 @@ function decide(command, cwd, denied = new Set()) {
     if (words[0].word === "cd" && foreign(words[1]?.word ?? "~", cwd)) return [];
     if (!piped) found.push(...symbols(words, cwd));
   }
-  return [...new Set(found)];
+  const names = [...new Set(found)];
+  return command.includes(ESCAPE) ? names.filter((name) => !asked.has(bare(name))) : names;
+}
+
+function lspNames({ operation, query, filePath, line, character }, cwd) {
+  if (operation === "workspaceSymbol") return query ? [query] : [];
+  try {
+    const text = readFileSync(resolve(cwd, expand(filePath)), "utf8").split("\n")[line - 1] ?? "";
+    for (const match of text.matchAll(/[$\w]+/g)) {
+      if (match.index <= character && character <= match.index + match[0].length) return [match[0]];
+    }
+  } catch {}
+  return [];
 }
 
 async function main() {
   let text = "";
   for await (const chunk of process.stdin) text += chunk;
   const input = JSON.parse(text || "{}");
-  const command = input.tool_input?.command ?? "";
+  const cwd = input.cwd ?? process.cwd();
   const ledger = join(input.scratchpad_dir ?? tmpdir(), `lsp-first-${input.session_id}`);
-  const denied = new Set(existsSync(ledger) ? readFileSync(ledger, "utf8").split("\n") : []);
-  const names = decide(command, input.cwd ?? process.cwd(), denied);
+  if (input.tool_name === "LSP") {
+    for (const name of lspNames(input.tool_input ?? {}, cwd)) appendFileSync(ledger, `${bare(name)}\n`);
+    return;
+  }
+  const asked = new Set(existsSync(ledger) ? readFileSync(ledger, "utf8").split("\n") : []);
+  const names = decide(input.tool_input?.command ?? "", cwd, asked);
   if (!names.length) return;
-  appendFileSync(ledger, `${commandKey(command)}\n`);
   console.log(
     JSON.stringify({
       hookSpecificOutput: {
@@ -179,7 +191,7 @@ if (process.argv[2] === "--test") {
   const cwd = realpathSync(mkdtempSync(join(tmpdir(), "lsp-first-")));
   mkdirSync(join(cwd, "src/stores"), { recursive: true });
   mkdirSync(join(cwd, "src/components"), { recursive: true });
-  writeFileSync(join(cwd, "src/stores/cart.ts"), "");
+  writeFileSync(join(cwd, "src/stores/cart.ts"), "export const $cartItems = atom([]);\n");
   const cases = [
     [String.raw`grep -rln "isLoggedIn\|isGuest" ${cwd}/src/components --include="*.tsx" | grep -v spec`, ["isLoggedIn", "isGuest"]],
     [String.raw`grep -rn 'cartTotal' src --include='*.ts' 2>/dev/null | grep -v -E '\.spec'`, ["cartTotal"]],
@@ -207,11 +219,19 @@ if (process.argv[2] === "--test") {
     [`grep -rn $name src`, []],
   ];
   for (const [command, expected] of cases) assert.deepEqual(decide(command, cwd), expected, command);
-  const denied = new Set([commandKey("rg 'buildQueryKey'")]);
-  assert.deepEqual(decide(`rg 'buildQueryKey'  ${ESCAPE}`, cwd, denied), []);
-  assert.deepEqual(decide(`rg 'buildQueryKey'`, cwd, denied), ["buildQueryKey"]);
-  assert.deepEqual(decide(`rg 'cartTotal' ${ESCAPE}`, cwd, denied), ["cartTotal"]);
+  const asked = new Set(["buildQueryKey", "cartItems"]);
+  assert.deepEqual(decide(`rg 'buildQueryKey' ${ESCAPE}`, cwd, asked), []);
+  assert.deepEqual(decide(`rg 'buildQueryKey'`, cwd, asked), ["buildQueryKey"]);
+  assert.deepEqual(decide(`rg 'buildQueryKey|cartTotal' ${ESCAPE}`, cwd, asked), ["cartTotal"]);
+  assert.deepEqual(decide(String.raw`grep -rn '\$cartItems' src ${ESCAPE}`, cwd, asked), []);
+  assert.deepEqual(lspNames({ operation: "workspaceSymbol", query: "cartTotal" }, cwd), ["cartTotal"]);
+  assert.deepEqual(lspNames({ operation: "findReferences", filePath: "src/stores/cart.ts", line: 1, character: 14 }, cwd), ["$cartItems"]);
+  assert.deepEqual(lspNames({ operation: "findReferences", filePath: "src/missing.ts", line: 1, character: 1 }, cwd), []);
   console.log("ok");
+} else if (process.argv[2] === "--names") {
+  // stdin: JSON [[command, cwd], …] → for each, the names it is denied for when the marker is left out
+  const pairs = JSON.parse(readFileSync(0, "utf8"));
+  console.log(JSON.stringify(pairs.map(([command, cwd]) => decide(command.replaceAll(ESCAPE, ""), cwd))));
 } else {
   // fail open: a broken hook must not get in the way
   main().catch((error) => console.error(`lsp-first: ${error.message}`));

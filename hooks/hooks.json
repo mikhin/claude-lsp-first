@@ -2,11 +2,12 @@
   "hooks": {
     "PreToolUse": [
       {
-        "matcher": "Bash",
+        "matcher": "Bash|LSP",
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/lsp-first.mjs\""
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/lsp-first.mjs\"",
+            "timeout": 10
           }
         ]
       }

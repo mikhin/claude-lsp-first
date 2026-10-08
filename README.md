@@ -42,10 +42,11 @@ the call hierarchy at the returned position, several symbols in parallel.
 - `git grep` over a revision (`HEAD~3`, a commit)
 - a grep after a pipe — that filters output, it does not search code
 - patterns built from shell variables (`"$name"`) and heredoc bodies
-- a denied command rerun with `# text-search` appended — the way out the deny message offers for
-  text matches. The marker on a command that was never denied is ignored, so it cannot become a
-  habit Claude puts on every grep. Denied commands are kept per session, as hashes, in a file in
-  the session's scratchpad (or the system temp dir).
+- a grep with `# text-search` appended, once the LSP tool was asked about every name in it — the way
+  out the deny message offers for text matches. The marker does nothing for a name the LSP was not
+  asked about, so it cannot become a habit Claude puts on every grep. The hook also runs on the LSP
+  tool and keeps the names asked about per session, in a file in the session's scratchpad (or the
+  system temp dir).
 
 ## Caveats
 
